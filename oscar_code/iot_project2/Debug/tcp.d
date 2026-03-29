@@ -22,6 +22,7 @@ tcp.obj: ../ip.h
 tcp.obj: ../tcp.h
 tcp.obj: ../socket.h
 tcp.obj: ../timer.h
+tcp.obj: ../mqtt.h
 
 ../tcp.c:
 
@@ -66,4 +67,6 @@ C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/include/stdbool.h:
 ../socket.h:
 
 ../timer.h:
+
+../mqtt.h:
 

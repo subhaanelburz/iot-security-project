@@ -22,6 +22,7 @@ mqtt.obj: ../ip.h
 mqtt.obj: ../eth0.h
 mqtt.obj: ../socket.h
 mqtt.obj: ../timer.h
+mqtt.obj: ../uart0.h
 
 ../mqtt.c:
 
@@ -66,4 +67,6 @@ C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/include/stdbool.h:
 ../socket.h:
 
 ../timer.h:
+
+../uart0.h:
 
