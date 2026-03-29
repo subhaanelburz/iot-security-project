@@ -524,6 +524,9 @@ int main(void)
         // TCP pending messages
         sendTcpPendingMessages(data);
 
+        // MQTT keepalive / ping handling
+        serviceMqtt();
+
         // Packet processing
         if (isEtherDataAvailable())
         {

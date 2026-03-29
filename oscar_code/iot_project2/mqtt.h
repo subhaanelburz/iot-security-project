@@ -32,6 +32,7 @@ void disconnectMqtt();
 void publishMqtt(char strTopic[], char strData[]);
 void subscribeMqtt(char strTopic[]);
 void unsubscribeMqtt(char strTopic[]);
+void serviceMqtt();
 void mqttTcpOpened(socket *s);
 void mqttTcpClosed(socket *s);
 void mqttTcpDataReceived(socket *s, uint8_t data[], uint16_t size);

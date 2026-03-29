@@ -31,6 +31,8 @@
 
 #define MQTT_PORT 1883
 #define MQTT_KEEPALIVE_SECONDS 60
+#define MQTT_IDLE_SECONDS ((MQTT_KEEPALIVE_SECONDS > 1) ? (MQTT_KEEPALIVE_SECONDS / 2) : 1)
+#define MQTT_PING_RESPONSE_TIMEOUT_SECONDS 10
 #define MQTT_QOS0 0
 #define MAX_MQTT_PACKET_SIZE 256
 #define MAX_PACKET_SIZE 1518
@@ -39,6 +41,8 @@ socket *mqttSocket = NULL;
 uint16_t mqttPacketId = 0;
 bool mqttConnectPending = false;
 bool mqttSessionEstablished = false;
+bool mqttPingOutstanding = false;
+bool mqttKeepaliveExpired = false;
 
 // ------------------------------------------------------------------------------
 //  Structures
@@ -94,6 +98,17 @@ static bool decodeRemainingLength(uint8_t data[], uint16_t size, uint16_t *value
     return true;
 }
 
+static void callbackMqttKeepaliveTimer(void)
+{
+    mqttKeepaliveExpired = true;
+}
+
+static void armMqttKeepaliveTimer(uint32_t seconds)
+{
+    if (!restartTimer(callbackMqttKeepaliveTimer))
+        startOneshotTimer(callbackMqttKeepaliveTimer, seconds);
+}
+
 static void sendMqttPacket(uint8_t controlType, uint8_t flags, uint8_t payload[], uint16_t payloadSize)
 {
     uint8_t buffer[MAX_MQTT_PACKET_SIZE];
@@ -118,12 +133,26 @@ static void sendMqttPacket(uint8_t controlType, uint8_t flags, uint8_t payload[]
     packetSize = 1 + headerSize + payloadSize;
 
     sendTcpMessage(ether, mqttSocket, ACK | PSH, buffer, packetSize);
+
+    if (controlType == 12)
+    {
+        mqttPingOutstanding = true;
+        armMqttKeepaliveTimer(MQTT_PING_RESPONSE_TIMEOUT_SECONDS);
+    }
+    else if (mqttSessionEstablished && controlType != 14)
+    {
+        mqttPingOutstanding = false;
+        armMqttKeepaliveTimer(MQTT_IDLE_SECONDS);
+    }
 }
 
 static void resetMqttState(void)
 {
+    stopTimer(callbackMqttKeepaliveTimer);
     mqttConnectPending = false;
     mqttSessionEstablished = false;
+    mqttPingOutstanding = false;
+    mqttKeepaliveExpired = false;
     mqttSocket = NULL;
 }
 
@@ -160,6 +189,8 @@ void connectMqtt()
     mqttSocket->state = TCP_CLOSED;
     mqttConnectPending = true;
     mqttSessionEstablished = false;
+    mqttPingOutstanding = false;
+    mqttKeepaliveExpired = false;
     openTcpConnection(mqttSocket);
 }
 
@@ -218,6 +249,26 @@ void unsubscribeMqtt(char strTopic[])
     sendMqttPacket(10, 2, payload, index);
 }
 
+void serviceMqtt()
+{
+    if ((mqttSocket == NULL) || !mqttSessionEstablished || !isTcpEstablished(mqttSocket))
+        return;
+    if (!mqttKeepaliveExpired)
+        return;
+
+    mqttKeepaliveExpired = false;
+
+    if (mqttPingOutstanding)
+    {
+        putsUart0("MQTT keepalive timeout\n");
+        disconnectMqtt();
+    }
+    else
+    {
+        sendMqttPacket(12, 0, NULL, 0);
+    }
+}
+
 void mqttTcpOpened(socket *s)
 {
     uint8_t payload[MAX_MQTT_PACKET_SIZE];
@@ -272,12 +323,23 @@ void mqttTcpDataReceived(socket *s, uint8_t data[], uint16_t size)
     {
         mqttSessionEstablished = (data[index + 1] == 0);
         if (mqttSessionEstablished)
+        {
+            mqttPingOutstanding = false;
+            armMqttKeepaliveTimer(MQTT_IDLE_SECONDS);
             putsUart0("MQTT connected\n");
+        }
         else
             putsUart0("MQTT connack error\n");
     }
+    else if (packetType == 13)
+    {
+        mqttPingOutstanding = false;
+        armMqttKeepaliveTimer(MQTT_IDLE_SECONDS);
+    }
     else if (packetType == 3 && remainingLength >= 2 && index < size)
     {
+        mqttPingOutstanding = false;
+        armMqttKeepaliveTimer(MQTT_IDLE_SECONDS);
         topicLength = (data[index] << 8) | data[index + 1];
         index += 2;
         if (topicLength >= sizeof(topic) || (index + topicLength) > size)
@@ -302,5 +364,10 @@ void mqttTcpDataReceived(socket *s, uint8_t data[], uint16_t size)
         putsUart0(": ");
         putsUart0(message);
         putsUart0("\n");
+    }
+    else if (mqttSessionEstablished)
+    {
+        mqttPingOutstanding = false;
+        armMqttKeepaliveTimer(MQTT_IDLE_SECONDS);
     }
 }
