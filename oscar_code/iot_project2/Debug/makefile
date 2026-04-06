@@ -21,6 +21,7 @@ ORDERED_OBJS += \
 "./ip.obj" \
 "./mqtt.obj" \
 "./nfc.obj" \
+"./sensor.obj" \
 "./socket.obj" \
 "./spi0.obj" \
 "./tcp.obj" \
@@ -138,29 +139,29 @@ endif
 
 # Add inputs and outputs from these tool invocations to the build variables 
 EXE_OUTPUTS += \
-iot_project2.out 
+Actual_Lab1\ -\ IoT.out 
 
 EXE_OUTPUTS__QUOTED += \
-"iot_project2.out" 
+"Actual_Lab1 - IoT.out" 
 
 
 # All Target
 all: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
-	@$(MAKE) --no-print-directory -Onone "iot_project2.out"
+	@$(MAKE) --no-print-directory -Onone "Actual_Lab1 - IoT.out"
 
 # Tool invocations
-iot_project2.out: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
+Actual_Lab1\ -\ IoT.out: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
 	@echo 'Building target: "$@"'
 	@echo 'Invoking: Arm Linker'
-	"C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/bin/armcl" -mv7M4 --code_state=16 --float_support=FPv4SPD16 -me --define=ccs="ccs" --define=PART_TM4C123GH6PM -g --gcc --diag_warning=225 --diag_wrap=off --display_error_number --abi=eabi -z -m"iot_project2.map" --heap_size=0 --stack_size=4096 -i"C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/lib" -i"C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/include" --reread_libs --diag_wrap=off --display_error_number --warn_sections --xml_link_info="iot_project2_linkInfo.xml" --rom_model -o "iot_project2.out" $(ORDERED_OBJS)
+	"C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/bin/armcl" -mv7M4 --code_state=16 --float_support=FPv4SPD16 -me --define=ccs="ccs" --define=PART_TM4C123GH6PM -g --gcc --diag_warning=225 --diag_wrap=off --display_error_number --abi=eabi -z -m"Actual_Lab1 - IoT.map" --heap_size=0 --stack_size=4096 -i"C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/lib" -i"C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/include" --reread_libs --diag_wrap=off --display_error_number --warn_sections --xml_link_info="Actual_Lab1 - IoT_linkInfo.xml" --rom_model -o "Actual_Lab1 - IoT.out" $(ORDERED_OBJS)
 	@echo 'Finished building target: "$@"'
 	@echo ' '
 
 # Other Targets
 clean:
 	-$(RM) $(EXE_OUTPUTS__QUOTED)
-	-$(RM) "arp.obj" "clock.obj" "dhcp.obj" "eeprom.obj" "eth0.obj" "ethernet.obj" "gpio.obj" "icmp.obj" "ip.obj" "mqtt.obj" "nfc.obj" "socket.obj" "spi0.obj" "tcp.obj" "timer.obj" "tm4c123gh6pm_startup_ccs.obj" "uart0.obj" "udp.obj" "wait.obj" 
-	-$(RM) "arp.d" "clock.d" "dhcp.d" "eeprom.d" "eth0.d" "ethernet.d" "gpio.d" "icmp.d" "ip.d" "mqtt.d" "nfc.d" "socket.d" "spi0.d" "tcp.d" "timer.d" "tm4c123gh6pm_startup_ccs.d" "uart0.d" "udp.d" "wait.d" 
+	-$(RM) "arp.obj" "clock.obj" "dhcp.obj" "eeprom.obj" "eth0.obj" "ethernet.obj" "gpio.obj" "icmp.obj" "ip.obj" "mqtt.obj" "nfc.obj" "sensor.obj" "socket.obj" "spi0.obj" "tcp.obj" "timer.obj" "tm4c123gh6pm_startup_ccs.obj" "uart0.obj" "udp.obj" "wait.obj" 
+	-$(RM) "arp.d" "clock.d" "dhcp.d" "eeprom.d" "eth0.d" "ethernet.d" "gpio.d" "icmp.d" "ip.d" "mqtt.d" "nfc.d" "sensor.d" "socket.d" "spi0.d" "tcp.d" "timer.d" "tm4c123gh6pm_startup_ccs.d" "uart0.d" "udp.d" "wait.d" 
 	-@echo 'Finished clean'
 	-@echo ' '
 

@@ -9,6 +9,7 @@
 "./ip.obj"
 "./mqtt.obj"
 "./nfc.obj"
+"./sensor.obj"
 "./socket.obj"
 "./spi0.obj"
 "./tcp.obj"

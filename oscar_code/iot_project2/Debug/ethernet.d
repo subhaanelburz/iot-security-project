@@ -38,6 +38,7 @@ ethernet.obj: ../tcp.h
 ethernet.obj: ../dhcp.h
 ethernet.obj: ../mqtt.h
 ethernet.obj: ../nfc.h
+ethernet.obj: ../sensor.h
 
 ../ethernet.c:
 
@@ -114,4 +115,6 @@ C:/ti/ccs1281/ccs/tools/compiler/ti-cgt-arm_20.2.7.LTS/include/_isfuncdcl.h:
 ../mqtt.h:
 
 ../nfc.h:
+
+../sensor.h:
 

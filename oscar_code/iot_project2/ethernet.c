@@ -77,6 +77,7 @@
 #include "dhcp.h"
 #include "mqtt.h"
 #include "nfc.h"
+#include "sensor.h"
 
 // Pins
 #define RED_LED PORTF,1
@@ -96,6 +97,10 @@
 
 #define NFC_MQTT_TOPIC     "tm4c/nfc"
 
+bool systemLocked = false;
+uint8_t nfcUid[NFC_MAX_UID_LENGTH]; //
+uint8_t nfcUidLength; //
+
 //-----------------------------------------------------------------------------
 // Subroutines                
 //-----------------------------------------------------------------------------
@@ -109,13 +114,14 @@ void initHw()
     // Enable clocks
     enablePort(PORTF);
     _delay_cycles(3);
-
+    initSensors();
     // Configure LED and pushbutton pins
     selectPinPushPullOutput(RED_LED);
     selectPinPushPullOutput(GREEN_LED);
     selectPinPushPullOutput(BLUE_LED);
     selectPinDigitalInput(PUSH_BUTTON);
     enablePinPullup(PUSH_BUTTON);
+
 }
 
 void displayConnectionInfo()
@@ -661,6 +667,33 @@ int main(void)
             {
                 nfcPresent = false;
                 lastNfcUidLength = 0;
+            }
+        }
+
+        // 1. Detection: If not locked, check PIR
+        if (!systemLocked && getPinValue(PORTD, 0)) // PD0 is PIR
+        {
+            float distance = getDistance();
+            if (distance < 50.0 && distance > 2.0) // 50cm threshold
+            {
+                systemLocked = true;
+                publishMqtt("tm4c/security", "ALERT: Proximity Breach"); //
+                putsUart0("Intruder detected! System LOCKED.\n"); //
+            }
+        }
+
+        // 2. Alarm and Reset: If locked, wait for NFC
+        if (systemLocked)
+        {
+            setPinValue(RED_LED, 1); // Visual Alert
+
+            // Check for ANY valid NFC tag to disarm
+            if (nfcReadUid(nfcUid, &nfcUidLength))
+            {
+                systemLocked = false;
+                setPinValue(RED_LED, 0); //
+                publishMqtt("tm4c/security", "Status: System Disarmed"); //
+                putsUart0("System reset by NFC tag.\n"); //
             }
         }
 

@@ -20,6 +20,7 @@ C_SRCS += \
 ../ip.c \
 ../mqtt.c \
 ../nfc.c \
+../sensor.c \
 ../socket.c \
 ../spi0.c \
 ../tcp.c \
@@ -41,6 +42,7 @@ C_DEPS += \
 ./ip.d \
 ./mqtt.d \
 ./nfc.d \
+./sensor.d \
 ./socket.d \
 ./spi0.d \
 ./tcp.d \
@@ -62,6 +64,7 @@ OBJS += \
 ./ip.obj \
 ./mqtt.obj \
 ./nfc.obj \
+./sensor.obj \
 ./socket.obj \
 ./spi0.obj \
 ./tcp.obj \
@@ -83,6 +86,7 @@ OBJS__QUOTED += \
 "ip.obj" \
 "mqtt.obj" \
 "nfc.obj" \
+"sensor.obj" \
 "socket.obj" \
 "spi0.obj" \
 "tcp.obj" \
@@ -104,6 +108,7 @@ C_DEPS__QUOTED += \
 "ip.d" \
 "mqtt.d" \
 "nfc.d" \
+"sensor.d" \
 "socket.d" \
 "spi0.d" \
 "tcp.d" \
@@ -125,6 +130,7 @@ C_SRCS__QUOTED += \
 "../ip.c" \
 "../mqtt.c" \
 "../nfc.c" \
+"../sensor.c" \
 "../socket.c" \
 "../spi0.c" \
 "../tcp.c" \
