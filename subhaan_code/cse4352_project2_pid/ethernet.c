@@ -1,0 +1,729 @@
+// Ethernet Framework for DHCP- and MQTT-based Projects
+// Spring 2026
+// Jason Losh
+
+//-----------------------------------------------------------------------------
+// Hardware Target
+//-----------------------------------------------------------------------------
+
+// Target Platform: EK-TM4C123GXL w/ ENC28J60
+// Target uC:       TM4C123GH6PM
+// System Clock:    40 MHz
+
+// Hardware configuration:
+// ENC28J60 Ethernet controller on SPI0
+//   MOSI (SSI0Tx) on PA5
+//   MISO (SSI0Rx) on PA4
+//   SCLK (SSI0Clk) on PA2
+//   ~CS (SW controlled) on PA3
+//   WOL on PB3
+//   INT on PC6
+
+// Pinning for IoT projects with wireless modules:
+// N24L01+ RF transceiver
+//   MOSI (SSI0Tx) on PA5
+//   MISO (SSI0Rx) on PA4
+//   SCLK (SSI0Clk) on PA2
+//   ~CS on PE0
+//   INT on PB2
+// Xbee module
+//   DIN (UART1TX) on PC5
+//   DOUT (UART1RX) on PC4
+
+//-----------------------------------------------------------------------------
+// Configuring Wireshark to examine packets
+//-----------------------------------------------------------------------------
+
+// sudo ethtool --offload eno2 tx off rx off
+// in wireshark, preferences->protocol->ipv4->validate the checksum if possible
+// in wireshark, preferences->protocol->udp->validate the checksum if possible
+
+//-----------------------------------------------------------------------------
+// Sending UDP test packets
+//-----------------------------------------------------------------------------
+
+// test this with a udp send utility like sendip
+//   send ipv4 (-p ipv4) udp protocol packet (-p udp)
+//      with contents (-d) "on" or "off"
+//   from 192.168.1.x (-is), port 10000 (-us)
+//   to   192.168.1.y, port 1024 (-ud)
+// sendip -p ipv4 -is 192.168.1.x -p udp -us 10000 -ud 1024 -d "on" 192.168.1.y
+// sendip -p ipv4 -is 192.168.1.x -p udp -us 10000 -ud 1024 -d "off" 192.168.1.y
+
+//-----------------------------------------------------------------------------
+// Device includes, defines, and assembler directives
+//-----------------------------------------------------------------------------
+
+// Name: Subhaan Elburz
+// ID:   1002135522
+
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include "tm4c123gh6pm.h"
+#include "clock.h"
+#include "eeprom.h"
+#include "gpio.h"
+#include "spi0.h"
+#include "i2c1.h"
+#include "uart0.h"
+#include "wait.h"
+#include "timer.h"
+#include "eth0.h"
+#include "arp.h"
+#include "ip.h"
+#include "icmp.h"
+#include "udp.h"
+#include "tcp.h"
+#include "dhcp.h"
+#include "mqtt.h"
+#include "sensors.h"
+
+// Pins
+#define RED_LED PORTF,1
+#define BLUE_LED PORTF,2
+#define GREEN_LED PORTF,3
+#define PUSH_BUTTON PORTF,4
+
+// EEPROM Map
+// all of the macros correspond to a block in EEPROM
+// each block holds the static addresses below
+#define EEPROM_DHCP        1
+#define EEPROM_IP          2
+#define EEPROM_SUBNET_MASK 3
+#define EEPROM_GATEWAY     4
+#define EEPROM_DNS         5
+#define EEPROM_TIME        6
+#define EEPROM_MQTT        7
+#define EEPROM_ERASED      0xFFFFFFFF   // when EEPROM is erased or first set up it is this value
+
+bool mqtt_subscribed = false;   // flag to check if we are subscribed
+
+//-----------------------------------------------------------------------------
+// Subroutines
+//-----------------------------------------------------------------------------
+
+// Initialize Hardware
+void initHw()
+{
+    // Initialize system clock to 40 MHz
+    initSystemClockTo40Mhz();
+
+    // Enable clocks
+    enablePort(PORTF);
+    _delay_cycles(3);
+
+    // Configure LED and pushbutton pins
+    selectPinPushPullOutput(RED_LED);
+    selectPinPushPullOutput(GREEN_LED);
+    selectPinPushPullOutput(BLUE_LED);
+    selectPinDigitalInput(PUSH_BUTTON);
+    enablePinPullup(PUSH_BUTTON);
+}
+
+// this just prints all the network info when
+// the user tpes ip; if dhcp is on it also
+// shows the remaining lease time
+void displayConnectionInfo()
+{
+    uint8_t i;
+    char str[20];
+    uint8_t mac[6];
+    uint8_t ip[4];
+    getEtherMacAddress(mac);
+    putsUart0("  HW:    ");
+    for (i = 0; i < HW_ADD_LENGTH; i++)
+    {
+        snprintf(str, sizeof(str), "%02"PRIu8, mac[i]);
+        putsUart0(str);
+        if (i < HW_ADD_LENGTH-1)
+            putcUart0(':');
+    }
+    putcUart0('\n');
+    getIpAddress(ip);
+    putsUart0("  IP:    ");
+    for (i = 0; i < IP_ADD_LENGTH; i++)
+    {
+        snprintf(str, sizeof(str), "%"PRIu8, ip[i]);
+        putsUart0(str);
+        if (i < IP_ADD_LENGTH-1)
+            putcUart0('.');
+    }
+    if (isDhcpEnabled())
+        putsUart0(" (dhcp)");
+    else
+        putsUart0(" (static)");
+    putcUart0('\n');
+    getIpSubnetMask(ip);
+    putsUart0("  SN:    ");
+    for (i = 0; i < IP_ADD_LENGTH; i++)
+    {
+        snprintf(str, sizeof(str), "%"PRIu8, ip[i]);
+        putsUart0(str);
+        if (i < IP_ADD_LENGTH-1)
+            putcUart0('.');
+    }
+    putcUart0('\n');
+    getIpGatewayAddress(ip);
+    putsUart0("  GW:    ");
+    for (i = 0; i < IP_ADD_LENGTH; i++)
+    {
+        snprintf(str, sizeof(str), "%"PRIu8, ip[i]);
+        putsUart0(str);
+        if (i < IP_ADD_LENGTH-1)
+            putcUart0('.');
+    }
+    putcUart0('\n');
+    getIpDnsAddress(ip);
+    putsUart0("  DNS:   ");
+    for (i = 0; i < IP_ADD_LENGTH; i++)
+    {
+        snprintf(str, sizeof(str), "%"PRIu8, ip[i]);
+        putsUart0(str);
+        if (i < IP_ADD_LENGTH-1)
+            putcUart0('.');
+    }
+    putcUart0('\n');
+    getIpTimeServerAddress(ip);
+    putsUart0("  Time:  ");
+    for (i = 0; i < IP_ADD_LENGTH; i++)
+    {
+        snprintf(str, sizeof(str), "%"PRIu8, ip[i]);
+        putsUart0(str);
+        if (i < IP_ADD_LENGTH-1)
+            putcUart0('.');
+    }
+    putcUart0('\n');
+    getIpMqttBrokerAddress(ip);
+    putsUart0("  MQTT:  ");
+    for (i = 0; i < IP_ADD_LENGTH; i++)
+    {
+        snprintf(str, sizeof(str), "%"PRIu8, ip[i]);
+        putsUart0(str);
+        if (i < IP_ADD_LENGTH-1)
+            putcUart0('.');
+    }
+    putcUart0('\n');
+    if (isDhcpEnabled())
+    {
+        putsUart0("  Lease: ");
+        uint32_t s, m, h, d;
+        s = getDhcpLeaseSeconds();
+        d = s / (24*60*60);
+        s -= d * (24*60*60);
+        h = s / (60*60);
+        s -= h * (60*60);
+        m = s / 60;
+        snprintf(str, sizeof(str), "%"PRIu32"d:%02"PRIu32"h:%02"PRIu32"m\n", d, h, m);
+        putsUart0(str);
+    }
+    if (isEtherLinkUp())
+        putsUart0("  Link is up\n");
+    else
+        putsUart0("  Link is down\n");
+}
+
+// this is the function that reads all the static addresses
+// from eeprom and also handles turning dhcp on/off
+void readConfiguration()
+{
+    uint32_t temp;
+    uint8_t* ip;
+
+    if (readEeprom(EEPROM_DHCP) == EEPROM_ERASED)   // if the static DHCP block is erased/empty
+    {
+        enableDhcp();   // that means we need to turn on DHCP
+    }
+    else
+    {
+        // DHCP is turned off and we need to load all the static ips
+        // this only happens if dhcp is turned off using the command
+        disableDhcp();
+        temp = readEeprom(EEPROM_IP);
+        if (temp != EEPROM_ERASED)
+        {
+            ip = (uint8_t*)&temp;
+            setIpAddress(ip);
+        }
+        temp = readEeprom(EEPROM_SUBNET_MASK);
+        if (temp != EEPROM_ERASED)
+        {
+            ip = (uint8_t*)&temp;
+            setIpSubnetMask(ip);
+        }
+        temp = readEeprom(EEPROM_GATEWAY);
+        if (temp != EEPROM_ERASED)
+        {
+            ip = (uint8_t*)&temp;
+            setIpGatewayAddress(ip);
+        }
+        temp = readEeprom(EEPROM_DNS);
+        if (temp != EEPROM_ERASED)
+        {
+            ip = (uint8_t*)&temp;
+            setIpDnsAddress(ip);
+        }
+        temp = readEeprom(EEPROM_TIME);
+        if (temp != EEPROM_ERASED)
+        {
+            ip = (uint8_t*)&temp;
+            setIpTimeServerAddress(ip);
+        }
+        temp = readEeprom(EEPROM_MQTT);
+        if (temp != EEPROM_ERASED)
+        {
+            ip = (uint8_t*)&temp;
+            setIpMqttBrokerAddress(ip);
+        }
+    }
+}
+
+#define MAX_CHARS 80
+char strInput[MAX_CHARS+1];
+char* token;
+uint8_t count = 0;
+
+// converts a string into an integer
+uint8_t asciiToUint8(const char str[])
+{
+    uint8_t data;
+    if (str[0] == '0' && tolower(str[1]) == 'x')
+        sscanf(str, "%hhx", &data);
+    else
+        sscanf(str, "%hhu", &data);
+    return data;
+}
+
+// this is the uart shell with all of the commands
+// note: some commands dont work since framework was taken
+// out of an even bigger library, like ping with icmp
+void processShell()
+{
+    bool end;
+    char c;
+    uint8_t i;
+    uint8_t ip[IP_ADD_LENGTH];
+    uint32_t* p32;
+    char *topic, *data;
+
+    if (kbhitUart0())
+    {
+        c = getcUart0();
+
+        end = (c == 13) || (count == MAX_CHARS);
+        if (!end)
+        {
+            if ((c == 8 || c == 127) && count > 0)
+                count--;
+            if (c >= ' ' && c < 127)
+                strInput[count++] = c;
+        }
+        else
+        {
+            strInput[count] = '\0';
+            count = 0;
+            token = strtok(strInput, " ");
+            if (strcmp(token, "dhcp") == 0)
+            {
+                token = strtok(NULL, " ");
+                if ( (strcmp(token, "renew") == 0) || (strcmp(token, "refresh") == 0) )
+                {
+                    // also added refresh because project doc says refresh
+                    // but the framework says renew? seems to be same tho
+                    renewDhcp();
+                }
+                else if (strcmp(token, "release") == 0)
+                {
+                    releaseDhcp();
+                }
+                else if (strcmp(token, "on") == 0)
+                {
+                    enableDhcp();                               // when we turn dhcp on we will erase the DHCP EEPROM block
+                    writeEeprom(EEPROM_DHCP, EEPROM_ERASED);    // then, the readConfiguration function handles enabling/disabling
+                }
+                else if (strcmp(token, "off") == 0)
+                {
+                    disableDhcp();                              // if dhcp is turned off we just write 0 to the DHCP EEPROM block
+                    writeEeprom(EEPROM_DHCP, 0);
+                }
+                else
+                    putsUart0("Error in dhcp argument\r");
+            }
+            if (strcmp(token, "mqtt") == 0)
+            {
+                token = strtok(NULL, " ");
+                if (strcmp(token, "connect") == 0)
+                {
+                    connectMqtt();
+                }
+                if (strcmp(token, "disconnect") == 0)
+                {
+                    disconnectMqtt();
+                }
+                if (strcmp(token, "publish") == 0)
+                {
+                    topic = strtok(NULL, " ");
+                    data = strtok(NULL, " ");
+                    if (topic != NULL && data != NULL)
+                        publishMqtt(topic, data);
+                }
+                if (strcmp(token, "subscribe") == 0)
+                {
+                    topic = strtok(NULL, " ");
+                    if (topic != NULL)
+                        subscribeMqtt(topic);
+                }
+                if (strcmp(token, "unsubscribe") == 0)
+                {
+                    topic = strtok(NULL, " ");
+                    if (topic != NULL)
+                        unsubscribeMqtt(topic);
+                }
+            }
+            if (strcmp(token, "ip") == 0)
+            {
+                displayConnectionInfo();
+            }
+            if (strcmp(token, "ping") == 0)
+            {
+                for (i = 0; i < IP_ADD_LENGTH; i++)
+                {
+                    token = strtok(NULL, " .");
+                    ip[i] = asciiToUint8(token);
+                }
+                //removed from this version to save space: sendPingRequest(ip)
+            }
+            if (strcmp(token, "reboot") == 0)
+            {
+                NVIC_APINT_R = NVIC_APINT_VECTKEY | NVIC_APINT_SYSRESETREQ;
+            }
+            if (strcmp(token, "set") == 0)  // the set command is whats used to write the static addresses in EEPROM
+            {
+                token = strtok(NULL, " ");
+                if (strcmp(token, "ip") == 0)
+                {
+                    for (i = 0; i < IP_ADD_LENGTH; i++)
+                    {
+                        token = strtok(NULL, " .");
+                        ip[i] = asciiToUint8(token);
+                    }
+                    setIpAddress(ip);
+                    p32 = (uint32_t*)ip;
+                    writeEeprom(EEPROM_IP, *p32);
+                }
+                if (strcmp(token, "sn") == 0)
+                {
+                    for (i = 0; i < IP_ADD_LENGTH; i++)
+                    {
+                        token = strtok(NULL, " .");
+                        ip[i] = asciiToUint8(token);
+                    }
+                    setIpSubnetMask(ip);
+                    p32 = (uint32_t*)ip;
+                    writeEeprom(EEPROM_SUBNET_MASK, *p32);
+                }
+                if (strcmp(token, "gw") == 0)
+                {
+                    for (i = 0; i < IP_ADD_LENGTH; i++)
+                    {
+                        token = strtok(NULL, " .");
+                        ip[i] = asciiToUint8(token);
+                    }
+                    setIpGatewayAddress(ip);
+                    p32 = (uint32_t*)ip;
+                    writeEeprom(EEPROM_GATEWAY, *p32);
+                }
+                if (strcmp(token, "dns") == 0)
+                {
+                    for (i = 0; i < IP_ADD_LENGTH; i++)
+                    {
+                        token = strtok(NULL, " .");
+                        ip[i] = asciiToUint8(token);
+                    }
+                    setIpDnsAddress(ip);
+                    p32 = (uint32_t*)ip;
+                    writeEeprom(EEPROM_DNS, *p32);
+                }
+                if (strcmp(token, "time") == 0)
+                {
+                    for (i = 0; i < IP_ADD_LENGTH; i++)
+                    {
+                        token = strtok(NULL, " .");
+                        ip[i] = asciiToUint8(token);
+                    }
+                    setIpTimeServerAddress(ip);
+                    p32 = (uint32_t*)ip;
+                    writeEeprom(EEPROM_TIME, *p32);
+                }
+                if (strcmp(token, "mqtt") == 0)
+                {
+                    for (i = 0; i < IP_ADD_LENGTH; i++)
+                    {
+                        token = strtok(NULL, " .");
+                        ip[i] = asciiToUint8(token);
+                    }
+                    setIpMqttBrokerAddress(ip);
+                    p32 = (uint32_t*)ip;
+                    writeEeprom(EEPROM_MQTT, *p32);
+                }
+            }
+
+            if (strcmp(token, "help") == 0)
+            {
+                putsUart0("Commands:\n");
+                putsUart0("  dhcp on|off|renew|release\n");
+                putsUart0("  mqtt ACTION [USER [PASSWORD]]\n");
+                putsUart0("    where ACTION = {connect|disconnect|publish TOPIC DATA\n");
+                putsUart0("                   |subscribe TOPIC|unsubscribe TOPIC}\n");
+                putsUart0("  ip\n");
+                putsUart0("  ping w.x.y.z\n");
+                putsUart0("  reboot\n");
+                putsUart0("  set ip|gw|dns|time|mqtt|sn w.x.y.z\n");
+                putsUart0("  tags          : list approved nfc tags\r\n");
+                putsUart0("  pir on|off    : toggle pir printing\r\n");
+                putsUart0("  sonic on|off  : toggle ultrasonic printing\r\n");
+                putsUart0("  sensors       : show pir/sonic state\r\n");
+                putsUart0("  start         : turn both sensors on\r\n");
+                putsUart0("  stop          : turn both sensors off\r\n");
+                putsUart0("\r\nnfc add/delete via mqtt: payload = name_group\r\n");
+                putsUart0("  groups: pir, knock, lock, garage\r\n");
+            }
+
+            if (strcmp(token, "tags") == 0)
+            {
+                printTags();
+            }
+
+            if (strcmp(token, "pir") == 0)
+            {
+                token = strtok(NULL, " ");
+                if (token != NULL && strcmp(token, "on") == 0)
+                {
+                    pir_print = true;
+                    putsUart0("pir printing: on\r\n");
+                }
+                else if (token != NULL && strcmp(token, "off") == 0)
+                {
+                    pir_print = false;
+                    putsUart0("pir printing: off\r\n");
+                }
+            }
+
+            if (strcmp(token, "sonic") == 0)
+            {
+                token = strtok(NULL, " ");
+                if (token != NULL && strcmp(token, "on") == 0)
+                {
+                    sonic_print = true;
+                    putsUart0("sonic printing: on\r\n");
+                }
+                else if (token != NULL && strcmp(token, "off") == 0)
+                {
+                    sonic_print = false;
+                    putsUart0("sonic printing: off\r\n");
+                }
+            }
+
+            if (strcmp(token, "sensors") == 0)
+            {
+                putsUart0("pir enabled:   ");
+                putsUart0(pir_enabled ? "yes\r\n" : "no\r\n");
+                putsUart0("pir uart:      ");
+                putsUart0(pir_print ? "on\r\n" : "off\r\n");
+                putsUart0("sonic enabled: ");
+                putsUart0(sonic_enabled ? "yes\r\n" : "no\r\n");
+                putsUart0("sonic uart:    ");
+                putsUart0(sonic_print ? "on\r\n" : "off\r\n");
+            }
+
+            if (strcmp(token, "start") == 0)
+            {
+                pir_enabled = true;
+                sonic_enabled = true;
+                putsUart0("sensors started\r\n");
+            }
+
+            if (strcmp(token, "stop") == 0)
+            {
+                pir_enabled = false;
+                sonic_enabled = false;
+                putsUart0("sensors stopped\r\n");
+            }
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+// Main
+//-----------------------------------------------------------------------------
+
+// Max packet is calculated as:
+// Ether frame header (18) + Max MTU (1500)
+// ethernet header = 14
+// max data payload = 1500
+// crc / frame check sequence = 4
+// summation = 14 + 1500 + 4 = 1518
+#define MAX_PACKET_SIZE 1518
+
+int main(void)
+{
+    uint8_t* udpData;
+    uint8_t buffer[MAX_PACKET_SIZE];            // array to hold all incoming packets
+    etherHeader *data = (etherHeader*) buffer;  // then we point an etherheader to the beginning of the array
+    socket s;
+
+    // Init controller
+    initHw();
+
+    // Setup UART0
+    initUart0();
+    setUart0BaudRate(115200, 40e6);
+
+    // Init timer
+    initTimer();
+
+    // Init sockets
+    initSockets();
+
+    // Init ethernet interface (eth0)
+    putsUart0("\nStarting eth0\n");
+    initEther(ETHER_UNICAST | ETHER_BROADCAST | ETHER_HALFDUPLEX);
+    setEtherMacAddress(2, 3, 4, 5, 6, 107); // set to 107 as my unique MAC address
+
+    // Init EEPROM
+    initEeprom();
+    readConfiguration();
+
+    // initialize the nfc, pir, and ultrasonic sensors
+    initAllSensors();
+
+    // green led flash to show that initialization finished
+    setPinValue(GREEN_LED, 1);
+    waitMicrosecond(100000);
+    setPinValue(GREEN_LED, 0);
+    waitMicrosecond(100000);
+
+    // Main Loop
+    // RTOS and interrupts would greatly improve this code,
+    // but the goal here is simplicity
+    while (true)
+    {
+        // Put terminal processing here
+        processShell();
+
+        // subscribe to our topics so we can see any add/delete commands
+        if (isMqttConnected() && !mqtt_subscribed)
+        {
+            subscribeMqtt(TOPIC_NFC_ADD);
+            subscribeMqtt(TOPIC_NFC_DELETE);
+            mqtt_subscribed = true;
+        }
+
+        // if we arent connected set the flag to false
+        if (!isMqttConnected())
+            mqtt_subscribed = false;
+
+        // run the sensor processing functions so we can publish data
+        processNfc();
+        processSensors();
+        processRelock();
+
+        // DHCP maintenance
+        if (isDhcpEnabled())
+        {
+            // if dhcp is turned on, send the dhcp message according to its state
+            sendDhcpPendingMessages(data);
+        }
+
+        // TCP pending messages
+        sendTcpPendingMessages(data);
+
+        // send ping response so we don't lose mqtt connection
+        serviceMqtt();
+
+        // Packet processing
+        if (isEtherDataAvailable()) // check if we receive any packets from ENC chip
+        {
+            if (isEtherOverflow())  // if the RX buffer overflows, we flash the red LED
+            {
+                setPinValue(RED_LED, 1);
+                waitMicrosecond(100000);
+                setPinValue(RED_LED, 0);
+            }
+
+            // Get packet
+            getEtherPacket(data, MAX_PACKET_SIZE);  // otherwise, we get the ethernet packet we received
+
+            // Handle ARP request
+            if (isArpRequest(data)) // if the packet we received was an ARP request, handle it
+            {
+                sendArpResponse(data);
+            }
+
+            // Route ARP response to appropriate handlers
+            // DHCP uses ARP response to verify address granted is not in use
+            // TCP active open uses ARP response to get the HW address to establish the socket
+            if (isArpResponse(data))
+            {
+                processDhcpArpResponse(data);   // if we got an arp reply, send it to dhcp and tcp
+                processTcpArpResponse(data);    // so that it can be handled appropriately
+            }
+
+            // Handle IP datagram
+            if (isIp(data))         // now we check if it is an ip packet
+            {
+            	if (isIpUnicast(data))  // if the packet was specifically sent to us
+            	{
+                    // Handle ICMP ping request
+                    if (isPingRequest(data))    // check/respond to any ping requests
+                    {
+                        sendPingResponse(data);
+                    }
+
+                    // Handle TCP datagram
+                    if (isTcp(data))
+                    {
+                        if (isTcpPortOpen(data))
+                        {
+                            processTcpResponse(data);
+                        }
+                        else
+                        {
+                            sendTcpResponse(data, &s, ACK | RST);
+                        }
+                    }
+                }
+
+            	// Handle DHCP response (not unicast)
+                if (isUdp(data))        // if the incoming packet is UDP
+                {
+                    if (isDhcpResponse(data))   // then check/handle if it is a DHCP response
+                    {
+                        processDhcpResponse(data);
+                    }
+                    else
+                    {
+                        // Handle UDP messages on any port, so feel free to comment out when working on DHCP
+                        udpData = getUdpData(data);
+
+                        if (strcmp((char*)udpData, "on") == 0)
+                        {
+                            setPinValue(GREEN_LED, 1);
+                        }
+
+                        if (strcmp((char*)udpData, "off") == 0)
+                        {
+                            setPinValue(GREEN_LED, 0);
+                        }
+
+                        // getSocketInfoFromUdpPacket(data, &s);
+                        // sendUdpMessage(data, s, (uint8_t*)"Received", 9);
+                    }
+                }
+            }
+        }
+    }
+}
