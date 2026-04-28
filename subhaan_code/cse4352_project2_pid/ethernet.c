@@ -68,7 +68,7 @@
 #include "eeprom.h"
 #include "gpio.h"
 #include "spi0.h"
-#include "i2c1.h"
+#include "spi1.h"
 #include "uart0.h"
 #include "wait.h"
 #include "timer.h"
@@ -483,13 +483,13 @@ void processShell()
                 putsUart0("  reboot\n");
                 putsUart0("  set ip|gw|dns|time|mqtt|sn w.x.y.z\n");
                 putsUart0("  tags          : list approved nfc tags\r\n");
-                putsUart0("  pir on|off    : toggle pir printing\r\n");
-                putsUart0("  sonic on|off  : toggle ultrasonic printing\r\n");
-                putsUart0("  sensors       : show pir/sonic state\r\n");
-                putsUart0("  start         : turn both sensors on\r\n");
-                putsUart0("  stop          : turn both sensors off\r\n");
+                putsUart0("  pir on|off    : enable/disable pir\r\n");
+                putsUart0("  sonic on|off  : enable/disable ultrasonic\r\n");
+                putsUart0("  sensors       : show sensor + mqtt state\r\n");
+                putsUart0("  start / stop  : enable/disable both sensors\r\n");
+                putsUart0("  nfc reinit    : re-run nfc init\r\n");
                 putsUart0("\r\nnfc add/delete via mqtt: payload = name_group\r\n");
-                putsUart0("  groups: pir, knock, lock, garage\r\n");
+                putsUart0("  groups: pid, knock, lock, garage\r\n");
             }
 
             if (strcmp(token, "tags") == 0)
@@ -502,13 +502,13 @@ void processShell()
                 token = strtok(NULL, " ");
                 if (token != NULL && strcmp(token, "on") == 0)
                 {
-                    pir_print = true;
-                    putsUart0("pir printing: on\r\n");
+                    pir_enabled = true;
+                    putsUart0("pir enabled\r\n");
                 }
                 else if (token != NULL && strcmp(token, "off") == 0)
                 {
-                    pir_print = false;
-                    putsUart0("pir printing: off\r\n");
+                    pir_enabled = false;
+                    putsUart0("pir disabled\r\n");
                 }
             }
 
@@ -517,26 +517,24 @@ void processShell()
                 token = strtok(NULL, " ");
                 if (token != NULL && strcmp(token, "on") == 0)
                 {
-                    sonic_print = true;
-                    putsUart0("sonic printing: on\r\n");
+                    sonic_enabled = true;
+                    putsUart0("sonic enabled\r\n");
                 }
                 else if (token != NULL && strcmp(token, "off") == 0)
                 {
-                    sonic_print = false;
-                    putsUart0("sonic printing: off\r\n");
+                    sonic_enabled = false;
+                    putsUart0("sonic disabled\r\n");
                 }
             }
 
             if (strcmp(token, "sensors") == 0)
             {
-                putsUart0("pir enabled:   ");
-                putsUart0(pir_enabled ? "yes\r\n" : "no\r\n");
-                putsUart0("pir uart:      ");
-                putsUart0(pir_print ? "on\r\n" : "off\r\n");
-                putsUart0("sonic enabled: ");
-                putsUart0(sonic_enabled ? "yes\r\n" : "no\r\n");
-                putsUart0("sonic uart:    ");
-                putsUart0(sonic_print ? "on\r\n" : "off\r\n");
+                putsUart0("pir:   ");
+                putsUart0(pir_enabled ? "on\r\n" : "off\r\n");
+                putsUart0("sonic: ");
+                putsUart0(sonic_enabled ? "on\r\n" : "off\r\n");
+                putsUart0("mqtt:  ");
+                putsUart0(isMqttConnected() ? "connected\r\n" : "disconnected\r\n");
             }
 
             if (strcmp(token, "start") == 0)
@@ -551,6 +549,18 @@ void processShell()
                 pir_enabled = false;
                 sonic_enabled = false;
                 putsUart0("sensors stopped\r\n");
+            }
+
+            if (strcmp(token, "nfc") == 0)
+            {
+                token = strtok(NULL, " ");
+                if (token != NULL && strcmp(token, "reinit") == 0)
+                {
+                    if (initNfc())
+                        putsUart0("nfc ready\r\n");
+                    else
+                        putsUart0("nfc init failed\r\n");
+                }
             }
         }
     }

@@ -836,7 +836,7 @@ void handleDhcpAck(etherHeader *ether)
                 | (uint32_t) opt_data[3];
     }
 
-    leaseSeconds = 60; // manually setting total least time to 60s *comment out later
+    // leaseSeconds = 60; // manually setting total least time to 60s *comment out later
 
     // then right after we reset the renew and rebind times
     leaseT1 = 0;
@@ -891,22 +891,22 @@ void sendDhcpPendingMessages(etherHeader *ether)
         // when half of our lease time has passed
         // we need to ask our specific landlord to extend the lease
         // also comment this out when testing T1 timer: T1COMMENT
-        /*if (dhcpState == DHCP_RENEWING && requestNeeded)
+        if (dhcpState == DHCP_RENEWING && requestNeeded)
         {
             requestNeeded = false;
 
             // this gets sent as a unicast message directly to the landlord
             sendDhcpMessage(ether, DHCPREQUEST);
-        }*/
+        }
 
         // if the landlord never replied to our renew requests
         // we have to broadcast to any server on the network for help
         // comment this out when testing full lease timer: LEASECOMMENT
-        /*if (dhcpState == DHCP_REBINDING && requestNeeded)
+        if (dhcpState == DHCP_REBINDING && requestNeeded)
         {
             requestNeeded = false;
             sendDhcpMessage(ether, DHCPREQUEST);
-        }*/
+        }
 
         // if the user manually requested to drop the ip address
         // we send a release message and clear everything out
@@ -1000,7 +1000,7 @@ void processDhcpResponse(etherHeader *ether)
 
     // we are renewing and waiting for a reply from our landlord
     // comment out this function to test timer T2 and see if it fires: T1COMMENT
-    /*else if (dhcpState == DHCP_RENEWING)
+    else if (dhcpState == DHCP_RENEWING)
     {
         if (isDhcpAck(ether))
         {
@@ -1040,7 +1040,7 @@ void processDhcpResponse(etherHeader *ether)
             // so we also have to return to init state
             init_state1();
         }
-    }*/
+    }
 
     // we are rebinding and waiting for a reply from any server
     else if (dhcpState == DHCP_REBINDING)

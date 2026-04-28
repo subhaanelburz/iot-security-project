@@ -87,7 +87,7 @@ bool measureUltrasonicDistance(uint16_t *distance_cm)
         // return false if the width is longer than the timeout
         if (pulseWidthUs >= ECHO_PULSE_TIMEOUT_US)
             return false;
-        waitMicrosecond(1);
+        _delay_cycles(40);  // wait 1us
         pulseWidthUs++;
     }
 

@@ -21,8 +21,8 @@ bool relock_pending = false;
 bool relock_expired = false;
 char relock_group[NFC_GROUP_MAX];
 
-bool nfc_poll_due = false;      // flag to check the nfc
-bool enroll_expired = false;    // flag when enrollment period ends
+bool nfc_cooldown_active = false;   // flag for cooldown so we dont spam nfc scans
+bool enroll_expired = false;        // flag when enrollment period ends
 
 // the last uid we scanned so we can prevent spam
 uint8_t last_uid[NFC_MAX_UID_LENGTH];
@@ -32,13 +32,11 @@ bool sensor_poll_due = false;   // flag to poll the sensors
 bool last_pir_state = false;    // flag to only publish pir state when it changes
 bool pir_enabled = true;        // flag to show pir sensor enabled
 bool sonic_enabled = true;      // flag to show ultrasonic sensor enabled
-bool pir_print = true;          // flag to print pir data
-bool sonic_print = true;        // flag to print ultrasonic data
 
-// called every second to try reading tag
-void callbackNfcPoll(void)
+// cooldown timer so we dont spam nfc scans
+void callbackNfcCooldown(void)
 {
-    nfc_poll_due = true;
+    nfc_cooldown_active = false;
 }
 
 // after enrollment period ends then set flag to expired
@@ -177,7 +175,7 @@ void publishGroupAction(const char *group, bool unlock)
 {
     if (strcmp(group, GROUP_KNOCK) == 0)
     {
-        publishMqtt(unlock ? TOPIC_KNOCK_UNLOCK : TOPIC_KNOCK_LOCK, "");
+        publishMqtt(unlock ? TOPIC_KNOCK_UNLOCK : TOPIC_KNOCK_LOCK, "1");
     }
     else if (strcmp(group, GROUP_LOCK) == 0)
     {
@@ -199,7 +197,7 @@ bool parseNameGroup(const char *msg, char *name_out, char *group_out)
     underscore = strrchr(msg, '_');
     if (underscore == NULL)
     {
-        putsUart0("\r\nformat: name_group (pir|knock|lock|garage)\r\n");
+        putsUart0("\r\nformat: name_group (pid|knock|lock|garage)\r\n");
         return false;
     }
 
@@ -218,11 +216,11 @@ bool parseNameGroup(const char *msg, char *name_out, char *group_out)
     group_out[NFC_GROUP_MAX - 1] = 0;
 
     // if the nfc tag added doesn't have valid group print error to terminal
-    if (strcmp(group_out, GROUP_PIR) != 0 && strcmp(group_out, GROUP_KNOCK) != 0
+    if (strcmp(group_out, GROUP_PID) != 0 && strcmp(group_out, GROUP_KNOCK) != 0
             && strcmp(group_out, GROUP_LOCK) != 0
             && strcmp(group_out, GROUP_GARAGE) != 0)
     {
-        putsUart0("\r\ngroup must be pir|knock|lock|garage\r\n");
+        putsUart0("\r\ngroup must be pid|knock|lock|garage\r\n");
         return false;
     }
 
@@ -281,8 +279,7 @@ void initAllSensors(void)
     // start pir and ultrasonic sensors
     initSensors();
 
-    // start the nfc polling timers to keep checking sensors every second
-    startPeriodicTimer(callbackNfcPoll, 1);
+    // start the polling timer to keep checking sensors every second
     startPeriodicTimer(callbackSensorPoll, 1);
 }
 
@@ -301,10 +298,9 @@ void processNfc(void)
         enroll_expired = false;
     }
 
-    // if we do not need to check nfc then just return
-    if (!nfc_poll_due)
+    // if we already scanned a tag and are on cooldown return until it expires
+    if (nfc_cooldown_active)
         return;
-    nfc_poll_due = false;
 
     // try reading a tag and return if we do not see a tag
     if (!nfcReadUid(uid, &uid_len))
@@ -359,8 +355,11 @@ void processNfc(void)
             relock_group[NFC_GROUP_MAX - 1] = 0;
             relock_pending = true;
             relock_expired = false;
+            nfc_cooldown_active = true;
             if (!restartTimer(callbackRelockTimer))
                 startOneshotTimer(callbackRelockTimer, RELOCK_SECONDS);
+            if (!restartTimer(callbackNfcCooldown))
+                startOneshotTimer(callbackNfcCooldown, 1);
         }
     }
     else
@@ -371,7 +370,12 @@ void processNfc(void)
         putsUart0(")\r\n");
 
         if (isMqttConnected())
+        {
             publishMqtt(TOPIC_NFC_ID, "unknown");
+            nfc_cooldown_active = true;
+            if (!restartTimer(callbackNfcCooldown))
+                startOneshotTimer(callbackNfcCooldown, 1);
+        }
     }
 }
 
@@ -415,40 +419,38 @@ void processSensors(void)
         return;
     sensor_poll_due = false;
 
-    // ensure mqtt is connected
-    if (!isMqttConnected())
-        return;
-
     if (pir_enabled)
     {
         // publish pir sensor data if the state changes from previous state
         pir = readPir();
         if (pir != last_pir_state)
         {
-            publishMqtt(TOPIC_PIR_MOTION, pir ? "on" : "off");
+            putsUart0("pir: ");
+            putsUart0(pir ? "on\r\n" : "off\r\n");
 
-            if (pir_print)
-            {
-                putsUart0("pir: ");
-                putsUart0(pir ? "on\r\n" : "off\r\n");
-            }
+            if (isMqttConnected())
+                publishMqtt(TOPIC_PIR_MOTION, pir ? "on" : "off");
 
             last_pir_state = pir;
         }
     }
+    else
+    {
+        last_pir_state = false;
+    }
 
     // publish distance in cm every time the pir sensor detects someone
-    if (sonic_enabled && last_pir_state)
+    if (sonic_enabled && (!pir_enabled || last_pir_state))
     {
         if (measureUltrasonicDistance(&distance))
         {
-            snprintf(buf, sizeof(buf), "%u", distance);
-            publishMqtt(TOPIC_ULT_DISTANCE, buf);
+            snprintf(msg, sizeof(msg), "ultrasonic: %u cm\r\n", distance);
+            putsUart0(msg);
 
-            if (sonic_print)
+            if (isMqttConnected())
             {
-                snprintf(msg, sizeof(msg), "sonic: %u cm\r\n", distance);
-                putsUart0(msg);
+                snprintf(buf, sizeof(buf), "%u", distance);
+                publishMqtt(TOPIC_ULT_DISTANCE, buf);
             }
         }
     }

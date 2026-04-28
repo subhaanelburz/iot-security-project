@@ -26,7 +26,7 @@
 // Global variables
 //-----------------------------------------------------------------------------
 
-#define NUM_TIMERS 10   // max number of timers we can set up at the same time
+#define NUM_TIMERS 15   // max number of timers we can set up at the same time
 
 // each index corresponds to the timer num, so index 0 = timer 0
 

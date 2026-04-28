@@ -13,7 +13,7 @@
 #define TOPIC_NFC_DELETE    "pid_nfc_delete"            // same thing but delete
 
 // different group names for the integration
-#define GROUP_PIR       "pir"
+#define GROUP_PID       "pid"
 #define GROUP_KNOCK     "knock"
 #define GROUP_LOCK      "lock"
 #define GROUP_GARAGE    "garage"
@@ -46,8 +46,6 @@ nfc_entry;
 // flags for ethernet command processing
 extern bool pir_enabled;
 extern bool sonic_enabled;
-extern bool pir_print;
-extern bool sonic_print;
 
 void initAllSensors(void);
 void processNfc(void);

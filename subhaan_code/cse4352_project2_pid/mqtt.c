@@ -420,9 +420,9 @@ void mqttTcpOpened(socket *s)
     if (s != mqttSocket || !mqttConnectPending)
         return;
 
-    // create unique client id/name to connect to broker
+    // set client id to pid as specified by broker
     getEtherMacAddress(mac);
-    snprintf(clientId, sizeof(clientId), "pid-mos-%u", mac[5]);
+    snprintf(clientId, sizeof(clientId), "pid");
 
     // create the variable header for MQTT
     index = writeMqttString(payload, index, "MQTT");
