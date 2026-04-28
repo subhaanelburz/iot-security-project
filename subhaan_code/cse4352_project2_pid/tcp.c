@@ -572,6 +572,7 @@ void processTcpResponse(etherHeader *ether)
             // save the ack number as our ISN + 1 and move onto established state
             s->acknowledgementNumber = incomingSequence + 1;
             s->state = TCP_ESTABLISHED;
+            putsUart0("\r\nTCP established\r\n");
 
             // stop the syn retry timer now that we are established
             stopTimer(callbackTcpSynRetryTimer);
@@ -584,6 +585,7 @@ void processTcpResponse(etherHeader *ether)
         {
             // if we got an RST flag sent to us we stop talking to the server
             // and close the "connection" (not connected yet)
+            putsUart0("\r\nTCP connection refused (RST)\r\n");
             stopTimer(callbackTcpSynRetryTimer);
             mqttTcpClosed(s);
             deleteSocket(s);
@@ -616,6 +618,7 @@ void processTcpResponse(etherHeader *ether)
 
         if (s->state == TCP_FIN_WAIT_2 || s->state == TCP_FIN_WAIT_1)
         {
+            putsUart0("\r\nTCP closing (TIME_WAIT)\r\n");
             // move onto TIME_WAIT state right before closing
             s->state = TCP_TIME_WAIT;
             mqttTcpClosed(s);           // tell mqtt TCP is closing
@@ -626,6 +629,7 @@ void processTcpResponse(etherHeader *ether)
         }
         else
         {
+            putsUart0("\r\nTCP FIN from broker (CLOSE_WAIT)\r\n");
             // the broker told us to close the connection so
             // move to CLOSE_WAIT state and send FIN-ACK
             s->state = TCP_CLOSE_WAIT;
@@ -637,6 +641,7 @@ void processTcpResponse(etherHeader *ether)
     // if we get an RST msg, then we stop talking to server
     if ((flags & RST) != 0)
     {
+        putsUart0("\r\nTCP RST received\r\n");
         mqttTcpClosed(s);
         deleteSocket(s);
     }

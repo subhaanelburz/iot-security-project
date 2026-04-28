@@ -8,64 +8,69 @@
 #include "nfc.h"
 #include "uart0.h"
 
-// pn532 spi prefix bytes from user manual sect 6.2.5
-// these are the logical values, we bit-reverse before tx since
-// pn532 is lsb-first but tm4c ssi hw is msb-first only
+// Names: Michael, Oscar, Subhaan
+
+// pn532 has to write operation byte before each transaction (pg 45)
+// 0x01 means we are sending a write frame, 0x03 means we are reading
 #define PN532_SPI_DATAWRITE 0x01    // host writes a frame
 #define PN532_SPI_DATAREAD  0x03    // host reads response frame
 
-// pn532 frame layout, same as i2c version
-#define PN532_PREAMBLE      0x00    // pg28 preamble = 00
-#define PN532_STARTCODE1    0x00    // two byte start code 00FF
+// pn532 sends data using frames
+// frame consists of preamble, start code, len, lcs, tfi, data, dcs, and postamble
+#define PN532_PREAMBLE      0x00    // pg28 shows preamble = 00
+#define PN532_STARTCODE1    0x00    // two byte start code being 00FF
 #define PN532_STARTCODE2    0xFF
-#define PN532_POSTAMBLE     0x00    // postamble also 00
+#define PN532_POSTAMBLE     0x00    // postamble (after data) also 00
 
-// tfi value depends on direction (pg29)
+// tfi (frame identifier) = value depends on the way of the message (pg 28)
+// "D4h in case of a frame from the host controller to the PN532"
+// "D5h in case of a frame from the PN532 to the host controller"
 #define PN532_HOST_TO_PN532 0xD4
 #define PN532_PN532_TO_HOST 0xD5
 
-// pn532 commands
-#define PN532_COMMAND_GET_FIRMWARE      0x02    // pg73
-#define PN532_COMMAND_SAM_CONFIGURATION 0x14    // pg89
-#define PN532_COMMAND_RFCONFIGURATION   0x32    // pg101
-#define PN532_COMMAND_INLIST_PASSIVE    0x4A    // pg115
-#define PN532_BAUD_ISO14443A            0x00    // 106 kbps default
+// miscellaneous commands get firmware version and SAM configuration
+// firmware command to just check if we can communicate
+// sam config command puts the chip in the correct mode with IRQ enabled
+#define PN532_COMMAND_GET_FIRMWARE      0x02    // input page 73
+#define PN532_COMMAND_SAM_CONFIGURATION 0x14    // input page 14
 
-// rfconfiguration cfgitem 5 = max retries (pg103)
-// configdata is 3 bytes: mxrtyatr, mxrtypsl, mxrtypassiveactivation
-// default is 0xff 0x01 0xff which makes inlistpassive retry forever
-// 0x01 means try twice (~60ms total) which is enough to catch a tap
-#define PN532_RFCFG_MAX_RETRIES         0x05
-#define MAX_RETRIES_PASSIVE_ACTIVATION  0x01
+// rf communication commands + baud rate to use during init
+// rfconfig we use to limit retries on scanning air for tags
+// inlist passive is actually used to scan the tag
+#define PN532_COMMAND_RFCONFIGURATION   0x32    // input page 101
+#define PN532_COMMAND_INLIST_PASSIVE    0x4A    // input page 115
+#define PN532_BAUD_ISO14443A            0x00    // same page, 106 kbps (default)
 
-// max frame size we support, plenty for our use case
+// rfconfiguration timing values from pg 103
+#define PN532_RFCFG_MAX_RETRIES         0x05    // CfgItem = 0x05
+#define MAX_RETRIES_PASSIVE_ACTIVATION  0x01    // set to 1 for two total tries
+
+// maximum frame size we can send is limited to 255 bytes (pg 28)
+// but we limit to 48 since we do not need all that space
 #define PN532_FRAME_MAX 48
 
-// cs is on pd1 same as ssi1fss but driven manually
+// cs is on pd1 same as spi1 fss but we drive it manually
 // since pn532 needs cs held low across the whole frame
 #define CS_PORT PORTD
 #define CS_PIN  1
 
-// irq from pn532, active low open drain (needs pullup)
-// pa7 is free since we dropped i2c1, easy to solder on the launchpad
+// irq pin from pn532, goes low when it has data ready for us
 #define IRQ_PORT PORTA
 #define IRQ_PIN  7
 
-// timeouts and intervals for ready waits
-// since rfconfiguration limits passive activation to 2 tries (~60ms),
-// 200 ms is plenty as a safety net without blocking the main loop too long
+// how often we check the irq pin and how long we wait total
+// we will wait 5 ms between checks and 200ms total for 2 tries
 #define IRQ_POLL_INTERVAL_MS 5
 #define IRQ_TIMEOUT_MS       200
 
-// expected ack frame from pn532 after every host command (pg30)
+// default ack frame we send to indicate previous frame was received (pg 30)
 const uint8_t ackFrame[] = {0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00};
 
-// flag so other code only talks to pn532 once init is done
+// bool so we only start communicating once initialization is done
 bool nfcReady = false;
 
-// reverse bit order in a byte
-// pn532 spi is lsb-first but tm4c ssi shifts msb-first
-// so we flip every byte going in and coming out
+// reverses bit order in a byte since spi sends msb first
+// but the pn532 reads/sends lsb first so we flip to match
 uint8_t reverse_bits(uint8_t b)
 {
     b = (uint8_t)(((b & 0xF0) >> 4) | ((b & 0x0F) << 4));
@@ -74,87 +79,98 @@ uint8_t reverse_bits(uint8_t b)
     return b;
 }
 
-// drive cs low to start a transaction
+// set cs low to start sending data frames
 void cs_low(void)
 {
     setPinValue(CS_PORT, CS_PIN, 0);
 }
 
-// drive cs high to end a transaction
+// set cs high to stop sending data frames
 void cs_high(void)
 {
     setPinValue(CS_PORT, CS_PIN, 1);
 }
 
 // send one byte to pn532 with bit-reversal
-// also drains rx fifo since every spi tx generates an rx byte
+// then reads rx fifo to clear it
 void spi_send_byte(uint8_t b)
 {
     writeSpi1Data(reverse_bits(b));
     (void)readSpi1Data();
 }
 
-// receive one byte from pn532 with bit-reversal
-// clocks out a dummy 0 so sclk runs while we shift data in
+// read one byte from pn532 with bit reversal
+// we send a dummy 0 so the clock runs while we shift the data in
 uint8_t spi_recv_byte(void)
 {
     writeSpi1Data(0x00);
     return reverse_bits((uint8_t)readSpi1Data());
 }
 
-// pn532 irq pin is active low
-// goes low when chip has a frame waiting for us, returns high after we read it
+// check if pn532 irq pin is low meaning it has data ready for us
+// goes low when chip has frame waiting, back high after we read it
 bool is_pn532_ready(void)
 {
     return getPinValue(IRQ_PORT, IRQ_PIN) == 0;
 }
 
-// poll the irq pin until pn532 signals data ready, or timeout
-// no spi traffic during the wait, just a cheap pin read every few ms
+// function that waits until the pn532 is ready for communication
+// by checking irq pin says it is ready; will return false
+// if it never initializes after timeout ms
 bool waitForPn532Ready(uint16_t timeout_ms)
 {
     uint16_t elapsed = 0;
+
     while (elapsed < timeout_ms)
     {
+        // continuously check if irq pin says its ready
         if (is_pn532_ready())
             return true;
+
+        // if not ready yet wait and retry
         waitMicrosecond(IRQ_POLL_INTERVAL_MS * 1000);
         elapsed += IRQ_POLL_INTERVAL_MS;
     }
+
     return false;
 }
 
-// read and verify the ack frame pn532 sends after every command
+// read any ACK msgs we get to ensure we received everything
 bool readPn532Ack(void)
 {
     uint8_t ack[6];
     uint8_t i;
 
-    // wait for irq to drop indicating ack is ready
+    // make sure the pn532 irq pin is actually ready
     if (!waitForPn532Ready(IRQ_TIMEOUT_MS))
         return false;
 
-    // pull the ack frame using a dataread transaction
-    // reading the frame causes pn532 to release irq back to high
+    // first pull cs low to send/receive data
     cs_low();
     waitMicrosecond(1000);
+
+    // then send first byte to initiate data read
     spi_send_byte(PN532_SPI_DATAREAD);
+
+    // afterwards start reading and decoding the msg we received
     for (i = 0; i < sizeof(ackFrame); i++)
         ack[i] = spi_recv_byte();
+
+    // pull cs back high to end reading
     cs_high();
 
-    // compare against the known good ack pattern
+    // check if the ACK msg we received is the correct ACK frame
     for (i = 0; i < sizeof(ackFrame); i++)
     {
         if (ack[i] != ackFrame[i])
             return false;
     }
+
     return true;
 }
 
-// build and send a pn532 command frame over spi
-// note: the spi frame has no leading 0x00 like the i2c version did
-// the datawrite prefix byte replaces that role
+// function that actually writes all messages we send to pn532
+// builds the entire frame defined in user manual
 bool writePn532Command(const uint8_t *command, uint8_t length)
 {
     uint8_t frame[PN532_FRAME_MAX];
@@ -162,33 +178,40 @@ bool writePn532Command(const uint8_t *command, uint8_t length)
     uint8_t i;
     uint8_t checksum;
 
-    // total frame size is 8 bytes overhead + data length (pg28)
+    // make sure we have the correct length first of all (8 byte + data, pg 28)
+    // (preamble, start code, len, lcs, tfi, data, dcs, and postamble)
     if ((command == 0) || (length == 0) || ((uint8_t)(length + 8) > sizeof(frame)))
         return false;
 
-    // build the frame
+    // now we create the actual frame
     frame[0] = PN532_PREAMBLE;
     frame[1] = PN532_STARTCODE1;
     frame[2] = PN532_STARTCODE2;
     frame[3] = length + 1;                          // len = data + tfi
-    frame[4] = (uint8_t)(~frame[3] + 1);            // lcs so len + lcs = 0
+    // ex: LEN = 0x05, LCS = 0xFA + 1 = 0xFB, 0xFB + 0x05 = 0x100 and we only take 1 byte so 0
+    frame[4] = (uint8_t)(~frame[3] + 1);            // length checksum to make sure LEN + LCS = 0
     frame[5] = PN532_HOST_TO_PN532;                 // tfi
 
-    // copy data and accumulate checksum at the same time
-    // dcs covers tfi + all data bytes
-    checksum = PN532_HOST_TO_PN532;
+    // now we copy the data in and compute the data checksum to make sure its 0
+    // data checksum is TFI + all data + DCS
+    checksum = PN532_HOST_TO_PN532; // tfi
     for (i = 0; i < length; i++)
     {
-        frame[6 + i] = command[i];
-        checksum += command[i];
+        frame[6 + i] = command[i];  // write byte by byte
+        checksum += command[i];     // add data for data checksum
     }
 
-    frame[6 + length] = (uint8_t)(~checksum + 1);   // dcs
+    // now finish dcs using same method to ensure its 0
+    frame[6 + length] = (uint8_t)(~checksum + 1);
+
+    // finish the frame with postamble
     frame[7 + length] = PN532_POSTAMBLE;
+
+    // add up whole frame header + data
     frameLength = 8 + length;
 
-    // send: cs low, datawrite prefix, frame bytes, cs high
-    // 2ms before clocking gives pn532 time to wake from idle
+    // actually send the command by pulling CS low
+    // and sending the whole frame, then pulling it back high
     cs_low();
     waitMicrosecond(2000);
     spi_send_byte(PN532_SPI_DATAWRITE);
@@ -196,12 +219,11 @@ bool writePn532Command(const uint8_t *command, uint8_t length)
         spi_send_byte(frame[i]);
     cs_high();
 
-    // wait for irq + verify ack frame
+    // if the command is successful we should get an ACK back so read for it
     return readPn532Ack();
 }
 
-// read a response frame from pn532 over spi
-// validates all framing fields and copies the data payload out
+// function reads all of the response messages we get back from the pn532
 bool readPn532Response(uint8_t command, uint8_t *data, uint8_t maxLength, uint8_t *actualLength)
 {
     uint8_t frame[PN532_FRAME_MAX];
@@ -214,9 +236,10 @@ bool readPn532Response(uint8_t command, uint8_t *data, uint8_t maxLength, uint8_
     if ((data == 0) || (actualLength == 0))
         return false;
 
-    // 9 bytes of framing overhead (no leading ready byte unlike i2c)
-    // preamble + start1 + start2 + len + lcs + tfi + cmd + dcs + postamble
+    // total length that we need to read
     bytesToRead = maxLength + 9;
+
+    // if the message is greater than our max frame size return false
     if (bytesToRead > sizeof(frame))
         return false;
 
@@ -224,7 +247,7 @@ bool readPn532Response(uint8_t command, uint8_t *data, uint8_t maxLength, uint8_
     if (!waitForPn532Ready(IRQ_TIMEOUT_MS))
         return false;
 
-    // pull the response frame
+    // since we know IRQ is read pull CS low and read data
     cs_low();
     waitMicrosecond(1000);
     spi_send_byte(PN532_SPI_DATAREAD);
@@ -232,40 +255,45 @@ bool readPn532Response(uint8_t command, uint8_t *data, uint8_t maxLength, uint8_
         frame[i] = spi_recv_byte();
     cs_high();
 
-    // verify preamble and start code at offsets 0,1,2 (no ready byte in spi)
+    // make sure the preamble and start code is the same
     if ((frame[0] != PN532_PREAMBLE) || (frame[1] != PN532_STARTCODE1) || (frame[2] != PN532_STARTCODE2))
         return false;
 
-    // length checksum: len + lcs must equal 0
+    // now we check the length using checksum, should equal 0
     frameLength = frame[3];
     if ((uint8_t)(frame[3] + frame[4]) != 0)
         return false;
+
+    // make sure the frame length is at least 2 for tfi and cmd
     if (frameLength < 2)
         return false;
 
-    // tfi must indicate pn532 to host
+    // make sure message is for us
     if (frame[5] != PN532_PN532_TO_HOST)
         return false;
-    // response cmd byte is request cmd + 1 (pg43)
+
+
+    // make sure the response is command + 1 (pg 43)
     if (frame[6] != (uint8_t)(command + 1))
         return false;
 
-    dataLength = frameLength - 2;       // subtract tfi and cmd bytes
+    // then compute data length by subtracting tfi and cmd bytes
+    dataLength = frameLength - 2;
     if (dataLength > maxLength)
         return false;
 
-    // data checksum: tfi + cmd + data + dcs must equal 0
+    // compute the data checksum by adding tfi, cmd, data, dcs and ensure it = 0
     for (i = 0; i < frameLength; i++)
         checksum += frame[5 + i];
     checksum += frame[5 + frameLength];
     if (checksum != 0)
         return false;
 
-    // postamble check
+    // verify the last byte in frame is the postamble
     if (frame[6 + frameLength] != PN532_POSTAMBLE)
         return false;
 
-    // copy out the actual payload, skipping the framing
+    // copy the actual message data by skipping past all the frame stuff
     memcpy(data, &frame[7], dataLength);
     *actualLength = dataLength;
     return true;
@@ -276,59 +304,58 @@ bool initNfc(void)
     uint8_t response[8];
     uint8_t length;
 
-    // get firmware version, takes no args
+    // first set the firmware version command
     const uint8_t firmwareCommand[] = {PN532_COMMAND_GET_FIRMWARE};
 
-    // sam config: 0x01 normal mode, 0x14 timeout (50ms * 20 = 1s), 0x01 use irq line
+    // then set the sam config command 0x01 = normal mode, 0x14 = timeout (50 ms * 20 = 1s), irq = 0x01 to enable (pg89)
     const uint8_t samConfigurationCommand[] = {PN532_COMMAND_SAM_CONFIGURATION, 0x01, 0x14, 0x01};
 
-    // rfconfiguration to limit passive activation retries
-    // without this, inlistpassive blocks until a tag appears (forever) and
-    // starves the main loop, breaking tcp/mqtt timing
-    // mxrtyatr 0xff and mxrtypsl 0x01 are the defaults, only the last byte changes
+    // then set the rfconfiguration (pg 101)
+    // we set CfgItem to 0x05 for pg 103, then leave the first 2 bytes as default
+    // then we set the max retries passive action to 1 to have 2 total retries
     const uint8_t rfConfigCommand[] = {
         PN532_COMMAND_RFCONFIGURATION,
-        PN532_RFCFG_MAX_RETRIES,
-        0xFF,                               // mxrtyatr default
-        0x01,                               // mxrtypsl default
-        MAX_RETRIES_PASSIVE_ACTIVATION      // mxrtypassiveactivation, the one we care about
+        PN532_RFCFG_MAX_RETRIES,            // 0x05 = max retries config
+        0xFF,                               // default atr retires
+        0x01,                               // default psl retries
+        MAX_RETRIES_PASSIVE_ACTIVATION      // 0x01 = max 2 attempts when scanning for tag
     };
 
-    // clear so a failed reinit does not leave a stale flag
+    // set the flag to false if we reinit
     nfcReady = false;
 
     putsUart0("nfc: init spi1\r\n");
 
-    // bring up spi1, no fss because we drive cs by hand
+    // initialize spi1 with no fss since we will manually drive it
     initSpi1(USE_SSI_RX);
-    setSpi1BaudRate(1000000, 40000000);     // 1 mhz, well under pn532 5 mhz max
-    setSpi1Mode(0, 0);                      // pn532 spi is mode 0 (cpol 0 cpha 0)
+    setSpi1BaudRate(1000000, 40000000);
+    setSpi1Mode(0, 0);
 
-    // override 16 bit dss from spi1.c init since pn532 is byte oriented
+    // override the 16 bit data frames by setting it to 8 bit data frames for pn532
     SSI1_CR1_R &= ~SSI_CR1_SSE;
     SSI1_CR0_R = (SSI1_CR0_R & ~SSI_CR0_DSS_M) | SSI_CR0_DSS_8;
     SSI1_CR1_R |= SSI_CR1_SSE;
 
-    // drain any stale rx bytes left in the fifo from configuration
+    // clear any stale bytes in receive fifo
     while (SSI1_SR_R & SSI_SR_RNE)
         (void)SSI1_DR_R;
 
-    // configure irq input on pe0, pullup since pn532 irq is open drain
+    // configure irq input on PA7 and enable pullup
     enablePort(IRQ_PORT);
     selectPinDigitalInput(IRQ_PORT, IRQ_PIN);
     enablePinPullup(IRQ_PORT, IRQ_PIN);
 
-    // park cs high (idle) before first transaction
+    // set CS to high before doing anything
     cs_high();
     waitMicrosecond(1000);
 
-    // wakeup pulse, lets pn532 come out of low power state
+    // pulse CS to ensure the line is active
     cs_low();
     waitMicrosecond(2000);
     cs_high();
     waitMicrosecond(2000);
 
-    // ask for firmware version, this also confirms basic comms work
+    // send firmware command and get the response to ensure commands work
     putsUart0("nfc: send firmware cmd\r\n");
     if (!writePn532Command(firmwareCommand, sizeof(firmwareCommand)))
     {
@@ -341,7 +368,7 @@ bool initNfc(void)
         return false;
     }
 
-    // configure sam, normal mode with irq line enabled
+    // similarly send sam config command and get response
     putsUart0("nfc: send sam config\r\n");
     if (!writePn532Command(samConfigurationCommand, sizeof(samConfigurationCommand)))
     {
@@ -354,58 +381,65 @@ bool initNfc(void)
         return false;
     }
 
-    // limit how long inlistpassive blocks when no tag is present
-    // this is the key fix for main loop responsiveness
+    // send the rf config command and get the response
     putsUart0("nfc: send rf config\r\n");
     if (!writePn532Command(rfConfigCommand, sizeof(rfConfigCommand)))
     {
         putsUart0("nfc: rf config cmd failed\r\n");
         return false;
     }
-    // rfconfiguration response is just the cmd echo with no payload
     if (!readPn532Response(PN532_COMMAND_RFCONFIGURATION, response, 1, &length))
     {
         putsUart0("nfc: rf config response failed\r\n");
         return false;
     }
 
+    // once all commands have run successfully, nfc has initialized
     nfcReady = true;
     return true;
 }
 
-// poll for one passive iso14443a target, return its uid
-// returns true only when a tag is detected and the uid was copied out
-// with rfconfiguration set, this returns in ~60ms when no tag is present
+// function to actually read all of the nfc uids
+// return true when it has been successfully detected and copied
 bool nfcReadUid(uint8_t *uid, uint8_t *uidLength)
 {
     uint8_t response[24];
     uint8_t responseLength;
 
-    // inlist passive: max 1 target, default baud
+    // create the polling command, set max targets to 1
     const uint8_t pollCommand[] = {PN532_COMMAND_INLIST_PASSIVE, 0x01, PN532_BAUD_ISO14443A};
 
+    // ensure that nfc is ready and we have a valid uid
     if ((uid == 0) || (uidLength == 0) || !nfcReady)
         return false;
 
     *uidLength = 0;
 
+    // actually send the poll command and read the response
     if (!writePn532Command(pollCommand, sizeof(pollCommand)))
         return false;
     if (!readPn532Response(PN532_COMMAND_INLIST_PASSIVE, response, sizeof(response), &responseLength))
         return false;
 
-    // response layout (pg116):
-    // [0] = num targets, [1] = tag id, [2-3] = sens_res, [4] = sel_res,
-    // [5] = uid length, [6..6+uidLen-1] = uid bytes
+    // now we read the actual inlist passive target command output (pg 116)
+    // we have number of targets found, tag number (1 for us since we only have 1 target),
+    // sens_res, sel_res, uid length, uid bytes
     if (responseLength < 6)
         return false;
-    if (response[0] == 0)               // no target detected
+
+    // if we didnt detect anything then nothing to read
+    if (response[0] == 0)
         return false;
+
+    // make sure the uid we read isnt 0 or greater than the max length
     if ((response[5] == 0) || (response[5] > NFC_MAX_UID_LENGTH))
         return false;
+
+    // make sure the data we received actually has correct number of bytes
     if (responseLength < (uint8_t)(6 + response[5]))
         return false;
 
+    // copy the actual uid
     memcpy(uid, &response[6], response[5]);
     *uidLength = response[5];
     return true;

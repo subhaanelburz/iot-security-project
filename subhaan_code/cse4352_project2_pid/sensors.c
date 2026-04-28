@@ -9,6 +9,8 @@
 #include "mqtt.h"
 #include "uart0.h"
 
+// Names: Michael, Oscar, Subhaan
+
 // create our global table of approved tags
 nfc_entry nfc_table[NFC_TABLE_MAX];
 

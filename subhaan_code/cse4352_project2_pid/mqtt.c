@@ -249,14 +249,20 @@ void connectMqtt()
 
     // if we are already connected, then return
     if (mqttSocket != NULL && mqttSocket->state != TCP_CLOSED)
+    {
+        putsUart0("\r\nMQTT already connected\r\n");
         return;
+    }
 
     // get the broker ip address that was set statically w/
     // "set mqtt 192.168.1.?"
     // ignore comment under function, it gets mqtt not time server
     getIpMqttBrokerAddress(ip);
     if ((ip[0] | ip[1] | ip[2] | ip[3]) == 0)
+    {
+        putsUart0("\r\nMQTT connect failed: no broker ip set\r\n");
         return;
+    }
 
     // create a new socket for the connection
     mqttSocket = newSocket();
@@ -276,6 +282,8 @@ void connectMqtt()
     mqttPingOutstanding = false;
     mqttKeepaliveExpired = false;
 
+    putsUart0("\r\nMQTT connecting to broker...\r\n");
+
     // now we call the function to actually start the TCP connection (sends first SYN)
     // SYN, SYN-ACK, ACK then connection is established
     // the CONNECT and CONNACK messages are done once mqttTcpOpened()
@@ -288,7 +296,12 @@ void disconnectMqtt()
 {
     // if there is no connection/socket, return
     if (mqttSocket == NULL)
+    {
+        putsUart0("\r\nMQTT not connected\r\n");
         return;
+    }
+
+    putsUart0("\r\nMQTT disconnecting...\r\n");
 
     // if there is a connection established, then send a disconnect packet
     if (mqttSessionEstablished && isTcpEstablished(mqttSocket))
@@ -403,6 +416,7 @@ void serviceMqtt()
     else
     {
         // otherwise send the ping request to tell the broker to keep connection
+        putsUart0("\r\nMQTT sending ping\r\n");
         sendMqttPacket(MQTT_PINGREQ, 0, NULL, 0);
     }
 }
@@ -419,6 +433,8 @@ void mqttTcpOpened(socket *s)
     // ensure we got the right socket and we need to connect to mqtt
     if (s != mqttSocket || !mqttConnectPending)
         return;
+
+    putsUart0("\r\nTCP open, sending MQTT CONNECT\r\n");
 
     // set client id to pid as specified by broker
     getEtherMacAddress(mac);
@@ -445,6 +461,11 @@ void mqttTcpClosed(socket *s)
     // check if correct socket, if it is, reset mqtt
     if (s != mqttSocket)
         return;
+
+    if (mqttSessionEstablished)
+        putsUart0("\r\nMQTT disconnected from broker\r\n");
+    else if (mqttConnectPending)
+        putsUart0("\r\nMQTT TCP closed before CONNECT completed\r\n");
 
     resetMqttState();
 }

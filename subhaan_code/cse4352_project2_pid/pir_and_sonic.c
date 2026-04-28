@@ -5,6 +5,8 @@
 #include "wait.h"
 #include "pir_and_sonic.h"
 
+// Names: Michael, Oscar, Subhaan
+
 // pins used for sensors
 #define PIR_INPUT           PORTE,1
 #define ULTRASONIC_TRIGGER  PORTE,2 // input trigger on ultrasonic sensor
